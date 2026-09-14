@@ -1,0 +1,68 @@
+# RAG_mine 依赖清单
+#
+# 下面括号里标注的版本，是在你本机 LearnLC311 环境实测跑通的版本，
+# 直接 `pip install -r requirements.txt` 即可复现。
+#
+# 安装：
+#   conda activate LearnLC311
+#   pip install -r requirements.txt
+
+# ---------------------------------------------------------------- Web 服务
+fastapi>=0.115
+uvicorn[standard]>=0.30
+python-multipart>=0.0.9      # /ingest/file 的 UploadFile 依赖它，缺了会 500
+pydantic>=2.7
+python-dotenv>=1.0
+
+# ---------------------------------------------------------------- LangChain 生态
+langchain>=1.3
+langchain-core>=1.4.9        # langchain-milvus 0.4.0 要求 >=1.4.9,<2.0.0
+langchain-community>=0.4     # BM25Retriever + 各种 DocumentLoader
+langchain-text-splitters>=1.0
+langgraph>=1.2               # Agentic RAG 的状态图
+langchain-openai>=1.0        # 走 OpenAI 兼容协议接智谱 GLM
+
+# ---------------------------------------------------------------- Embedding（本地）
+langchain-huggingface>=1.0
+sentence-transformers>=3.0   # 会连带装 torch，比较大，建议提前配好国内源
+torch>=2.0
+
+# ---------------------------------------------------------------- 向量库 Milvus
+langchain-milvus==0.4.0      # 版本敏感：配合 pymilvus 3.x，别随意升级
+pymilvus>=3.0.0,<4.0.0
+milvus-lite>=3.1.0           # 本地文件模式（Milvus Lite）
+                             # PyPI 元数据写的是 sys_platform != "win32"，
+                             # 但在你的 Windows 环境实测可用；
+                             # 若某台机器装不上，改用 Docker 起 Milvus 服务并设置 RAG_MILVUS_URI
+
+# ---------------------------------------------------------------- 稀疏检索 BM25
+rank_bm25>=0.2.2
+jieba>=0.42.1                # 中文分词。不装也能跑（会退化为按字+二元组），装了召回更好
+
+# ---------------------------------------------------------------- 精排 Reranker
+langchain-cohere>=0.4
+
+# ---------------------------------------------------------------- 文档解析
+pypdf>=5.0                   # .pdf
+docx2txt>=0.9                # .docx
+beautifulsoup4>=4.12         # .html / .htm
+lxml>=5.0                    # bs4 的高性能解析器（可选，装了更快）
+
+# ---------------------------------------------------------------- 评估
+ragas>=0.2.14
+
+# ================================================================
+# 已知兼容性坑（代码里已经绕过，这里记录备查）
+#
+# 1) ragas 0.4.x 会 `from langchain_community.chat_models.vertexai import ChatVertexAI`，
+#    而 langchain-community 0.4.x 已删除该模块，导致 `import ragas` 直接报
+#    ModuleNotFoundError。eval_ragas.py 里注入了一个占位模块来绕过，
+#    不需要为此降级任何依赖。
+#
+# 2) 环境变量不能叫 MILVUS_URI。pymilvus 3.x 在 import 阶段就会读取它并按
+#    http[s]:// 解析，本地文件路径会让 `import pymilvus` 直接抛异常。
+#    本项目用的是 RAG_MILVUS_URI。
+#
+# 3) 不需要 chromadb / faiss-cpu —— 那是上一版（Chroma/FAISS）的依赖，
+#    本版已全部换到 Milvus，这两个可以卸载。
+# ================================================================
