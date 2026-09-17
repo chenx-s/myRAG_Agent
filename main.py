@@ -30,6 +30,8 @@ from typing import List, Optional
 from fastapi import FastAPI, File, HTTPException, UploadFile
 from pydantic import BaseModel, Field
 
+from redis_fastapi import FastAPIRedis , AsyncRedisDep
+
 # ---------------------------------------------------------------- 日志降噪
 # pypdf 解析复杂 PDF（比如 llama2.pdf）时会刷大量这种 WARNING：
 #   Exceeded 5000 form XObject invocations while extracting text,
@@ -198,6 +200,7 @@ app = FastAPI(
     lifespan=lifespan,
 )
 
+FastAPIRedis(app).lifespan()
 
 # ---------------------------------------------------------------- 工具函数
 
@@ -233,6 +236,11 @@ def _to_source(document) -> SourceInfo:
 
 
 # ---------------------------------------------------------------- 接口
+
+@app.get("/items")
+async def get_item(redis: AsyncRedisDep):
+    return {"items" : await redis.get("items")}
+
 
 
 @app.get("/health")
