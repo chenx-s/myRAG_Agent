@@ -178,6 +178,12 @@ class Settings:
     LANGSMITH_API_KEY: str = os.getenv("LANGSMITH_API_KEY")
     LANGSMITH_PROJECT: str = os.getenv("LANGSMITH_PROJECT", "MyFirstProject")
 
+
+    REDIS_URL: str = os.getenv("REDIS_URL" ,     "redis://localhost:6379/0")
+
+    APP_NAME: str = os.getenv("APP_NAME","fastapi-redis-demo")
+    ACCESS_TOKEN_EXPIRE_SECONDS: int = os.getenv("ACCESS_TOKEN_EXPIRE_SECONDS" ,3600 )
+
     # ------------------------------------------------------------ 派生属性
     @property
     def bm25_corpus_path(self) -> str:
