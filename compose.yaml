@@ -1,0 +1,65 @@
+services:
+  redis:
+    image: redis:7-alpine
+    restart: unless-stopped
+    command:
+      - redis-server
+      - --appendonly
+      - "yes"
+      - --maxmemory
+      - 512mb
+      - --maxmemory-policy
+      - allkeys-lru
+    volumes:
+      - redis-data:/data
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 5s
+      timeout: 3s
+      retries: 10
+
+  app:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    restart: unless-stopped
+    init: true
+    env_file:
+      - .env
+    environment:
+      # Inside Compose, "redis" is the Redis service DNS name. localhost would
+      # point back to this application container.
+      REDIS_URL: redis://redis:6379/0
+      LLM_CACHE_ENABLED: "true"
+      RAG_MILVUS_URI: /app/vector_db/milvus_rag.db
+      VECTOR_DB_PATH: /app/vector_db
+      DATA_DIR: /app/data
+      HF_HOME: /app/.cache/huggingface
+      # Xet large-file transport can stall on some Windows/China networks.
+      # Standard HTTP is slower in ideal conditions but more reliable here.
+      HF_HUB_DISABLE_XET: "1"
+    ports:
+      - "8000:8000"
+    volumes:
+      - ./data:/app/data
+      - ./vector_db:/app/vector_db
+      - huggingface-cache:/app/.cache/huggingface
+    depends_on:
+      redis:
+        condition: service_healthy
+    healthcheck:
+      test:
+        - CMD
+        - python
+        - -c
+        - >-
+          import urllib.request;
+          urllib.request.urlopen('http://127.0.0.1:8000/health', timeout=5)
+      interval: 30s
+      timeout: 10s
+      start_period: 180s
+      retries: 5
+
+volumes:
+  redis-data:
+  huggingface-cache:

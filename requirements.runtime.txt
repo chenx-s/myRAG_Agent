@@ -1,0 +1,43 @@
+# Runtime dependencies for the API and ResearchAgent containers.
+# Offline evaluation dependencies such as ragas intentionally stay out of the image.
+
+# Web service
+fastapi>=0.115
+uvicorn[standard]>=0.30
+python-multipart>=0.0.9
+pydantic>=2.7
+python-dotenv>=1.0
+redis>=5.0
+
+# LangChain / LangGraph
+langchain>=1.3
+langchain-core>=1.4.9
+langchain-community>=0.4
+langchain-text-splitters>=1.0
+langgraph>=1.2
+langchain-openai>=1.0
+
+# Agent tools
+tavily-python>=0.8.3
+tenacity>=8.2
+
+# Embeddings (torch is installed separately as a CPU-only wheel in Dockerfile)
+langchain-huggingface>=1.0
+sentence-transformers>=3.0
+torch>=2.0
+
+# Milvus / hybrid retrieval
+langchain-milvus==0.4.0
+pymilvus>=3.0.0,<4.0.0
+milvus-lite>=3.1.0
+rank_bm25>=0.2.2
+jieba>=0.42.1
+
+# Reranker
+langchain-cohere>=0.4
+
+# Document parsing
+pypdf>=5.0
+docx2txt>=0.9
+beautifulsoup4>=4.12
+lxml>=5.0

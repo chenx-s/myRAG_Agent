@@ -70,6 +70,50 @@ LLM 缓存作用于 RAG 和 ResearchAgent 的全部模型调用；缓存键同�
 Redis 暂时不可用时请求会直接调用 LLM，不会因缓存故障而失败；`/health` 的
 `llm_cache` 字段可查看连接状态与进程内命中/未命中计数。
 
+### 使用 Docker Compose 启动
+
+项目根目录已经提供 `Dockerfile` 和 `compose.yaml`。Docker Desktop 启动后执行：
+
+```bash
+# 构建应用镜像，并启动 RAG API + Redis
+docker compose up --build -d
+
+# 查看启动日志（首次会下载 Embedding 模型，耗时较长）
+docker compose logs -f app
+```
+
+Docker 镜像使用 `requirements.runtime.txt`，只安装 API/Agent 运行依赖；
+离线评估使用的 `ragas` 仍保留在完整的 `requirements.txt` 中，不会增大生产镜像或触发无关的依赖回溯。
+
+启动完成后访问 <http://127.0.0.1:8000/docs>。检查容器状态：
+
+```bash
+docker compose ps
+curl http://127.0.0.1:8000/health
+```
+
+Compose 会自动完成以下容器内配置：
+
+- Redis 地址改为 `redis://redis:6379/0`；
+- `data/` 和 `vector_db/` 挂载到宿主机，文档与 Milvus Lite 数据不会随容器删除；
+- Redis 数据和 HuggingFace 模型缓存使用 Docker Volume 持久化；
+- 应用代码不会把 `.env` 和其中的 API Key 打进镜像，密钥只在启动时注入。
+
+常用管理命令：
+
+```bash
+docker compose restart app       # 重启应用
+docker compose down              # 停止并删除容器，保留数据卷
+docker compose down -v           # 同时删除 Redis/模型缓存卷（谨慎）
+docker compose build --no-cache  # 不使用构建缓存重新打包
+```
+
+如果只想生成应用镜像而不启动：
+
+```bash
+docker build -t rag-mine:latest .
+```
+
 ---
 
 ## 接口一览
