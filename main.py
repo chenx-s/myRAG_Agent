@@ -21,16 +21,15 @@
     再去看 /query 的最终效果，能省下大量 token 和时间。
 """
 
+import asyncio
 import logging
-import shutil
 from contextlib import asynccontextmanager
 from pathlib import Path
 from typing import List, Optional
 
+import anyio
 from fastapi import FastAPI, File, HTTPException, UploadFile
 from pydantic import BaseModel, Field
-
-from redis_fastapi import FastAPIRedis , AsyncRedisDep
 
 # ---------------------------------------------------------------- 日志降噪
 # pypdf 解析复杂 PDF（比如 llama2.pdf）时会刷大量这种 WARNING：
@@ -44,12 +43,20 @@ logging.getLogger("pypdf._page").setLevel(logging.ERROR)
 from app.config import settings
 from app.document_processer import (
     SUPPORTED_EXTENSIONS,
-    load_document,
-    load_directory,
-    split_documents,
+    aload_directory,
+    aload_document,
+    asplit_documents,
 )
+from app.llm_cache import cache_info
 from app.rag_chain import RAGChain
-from app.vector_store import add_documents, clear, count, stats, warmup
+from app.redis_client import close_redis, redis_health
+from app.vector_store import (
+    aadd_documents,
+    aclear,
+    acount,
+    astats,
+    awarmup,
+)
 
 
 # ---------------------------------------------------------------- Schemas
@@ -167,10 +174,10 @@ async def lifespan(app: FastAPI):
     Path(settings.VECTOR_DB_PATH).mkdir(parents=True, exist_ok=True)
 
     # 预热：加载 Embedding 模型 -> 打开 Milvus -> 构建 BM25 倒排索引
-    warmup()
-    rag_chain = RAGChain()
+    await awarmup()
+    rag_chain = RAGChain(warm=False)
 
-    print(f"[startup] 向量库就绪，当前索引块数：{count()}")
+    print(f"[startup] 向量库就绪，当前索引块数：{await acount()}")
     print(
         f"[startup] 混合检索={settings.HYBRID_ENABLED} "
         f"(dense={settings.DENSE_WEIGHT}, sparse={settings.SPARSE_WEIGHT}) "
@@ -183,9 +190,17 @@ async def lifespan(app: FastAPI):
     if settings.RERANK_ENABLED and not settings.COHERE_API_KEY:
         print("[warn] 未配置 COHERE_API_KEY，精排将自动跳过（混合检索仍正常工作）")
 
-    yield
+    redis_state = await redis_health()
+    if redis_state.get("connected"):
+        print("[startup] Redis LLM 缓存已连接")
+    elif redis_state.get("enabled"):
+        print(f"[warn] Redis 不可用，LLM 缓存将自动旁路：{redis_state.get('error')}")
 
-    print("[shutdown] FastAPI 退出，清理资源")
+    try:
+        yield
+    finally:
+        await close_redis()
+        print("[shutdown] FastAPI 退出，清理资源")
 
 
 app = FastAPI(
@@ -200,24 +215,25 @@ app = FastAPI(
     lifespan=lifespan,
 )
 
-FastAPIRedis(app).lifespan()
-
 # ---------------------------------------------------------------- 工具函数
 
 
-def _ingest_docs(docs) -> IngestResponse:
+async def _ingest_docs(docs) -> IngestResponse:
     """将文档列表分块后写入向量库，返回写入结果。"""
     if not docs:
         return IngestResponse(
-            status="empty", chunk_indexed=0, total_chunks=count(), detail="没有可入库的文档"
+            status="empty",
+            chunk_indexed=0,
+            total_chunks=await acount(),
+            detail="没有可入库的文档",
         )
 
-    chunks = split_documents(docs)
-    num_indexed = add_documents(chunks)
+    chunks = await asplit_documents(docs)
+    num_indexed = await aadd_documents(chunks)
     return IngestResponse(
         status="success" if num_indexed > 0 else "failed",
         chunk_indexed=num_indexed,
-        total_chunks=count(),
+        total_chunks=await acount(),
         detail=f"已入库 {num_indexed}/{len(chunks)} 个文档块",
     )
 
@@ -237,15 +253,10 @@ def _to_source(document) -> SourceInfo:
 
 # ---------------------------------------------------------------- 接口
 
-@app.get("/items")
-async def get_item(redis: AsyncRedisDep):
-    return {"items" : await redis.get("items")}
-
-
-
 @app.get("/health")
 async def health():
     """健康检查：暴露运行时配置，方便排查"到底生效的是哪套参数"。"""
+    vector_store_stats, redis_state = await asyncio.gather(astats(), redis_health())
     return {
         "status": "ok",
         "version": "2.0.0",
@@ -271,7 +282,8 @@ async def health():
             "top_n": settings.RERANK_TOP_N,
             "ready": settings.rerank_ready,
         },
-        "vector_store_stats": stats(),
+        "vector_store_stats": vector_store_stats,
+        "llm_cache": {**cache_info(), **redis_state},
         "api_key_configured": bool(
             settings.OPENAI_API_KEY and settings.OPENAI_API_KEY != "YOUR_OPENAI_API_KEY"
         ),
@@ -292,17 +304,20 @@ async def ingest_file(file: UploadFile = File(...)):
     upload_dir.mkdir(parents=True, exist_ok=True)
     dest = upload_dir / Path(file.filename).name
 
-    with open(dest, "wb") as handle:
-        shutil.copyfileobj(file.file, handle)
+    # UploadFile.read() 与 anyio.open_file() 都是异步门面，不占用事件循环。
+    async with await anyio.open_file(dest, "wb") as handle:
+        while chunk := await file.read(1024 * 1024):
+            await handle.write(chunk)
+    await file.close()
 
     try:
-        docs = load_document(str(dest))
+        docs = await aload_document(str(dest))
     except Exception as error:
         # 原代码这里写的是 HTTPException(status=...)，status 不是合法参数，
         # 会变成 TypeError 而不是 422，顺手改掉。
         raise HTTPException(status_code=422, detail=f"文档解析失败：{error}")
 
-    resp = _ingest_docs(docs)
+    resp = await _ingest_docs(docs)
     if resp.status != "success":
         raise HTTPException(status_code=500, detail=f"文档入库失败：{resp.detail}")
 
@@ -316,8 +331,8 @@ async def ingest_directory():
     注意：这是**追加**写入，不去重。同一批文件重复调用会往库里塞重复块。
     需要重来时先 DELETE /index。
     """
-    docs = load_directory(settings.DATA_DIR)
-    return _ingest_docs(docs)
+    docs = await aload_directory(settings.DATA_DIR)
+    return await _ingest_docs(docs)
 
 
 @app.post("/retrieve", response_model=RetrieveResponse)
@@ -328,7 +343,7 @@ async def retrieve_debug(request: RetrieveRequest):
     - 同一问题分别开/关 skip_rerank，看精排把哪几条提上来了
     - 调 DENSE_WEIGHT / SPARSE_WEIGHT，看专有名词类问题的命中变化
     """
-    if count() == 0:
+    if await acount() == 0:
         raise HTTPException(
             status_code=400, detail="向量库为空，请先上传文档入库"
         )
@@ -352,13 +367,13 @@ async def retrieve_debug(request: RetrieveRequest):
         "skip_check": False,
     }
 
-    state.update(transform_query(state))
-    state.update(retrieve(state))
+    state.update(await transform_query(state))
+    state.update(await retrieve(state))
 
     candidates = state["candidates"]
 
     if not request.skip_rerank:
-        state.update(rerank_documents(state))
+        state.update(await rerank_documents(state))
 
     documents = state["documents"]
     if request.top_k:
@@ -389,14 +404,14 @@ async def query(request: QueryRequest):
         raise HTTPException(status_code=503, detail="RAG 链未初始化")
     if not settings.OPENAI_API_KEY or settings.OPENAI_API_KEY == "YOUR_OPENAI_API_KEY":
         raise HTTPException(status_code=503, detail="未配置 LLM_API_KEY，无法调用 LLM")
-    if count() == 0:
+    if await acount() == 0:
         raise HTTPException(
             status_code=400,
             detail="向量库为空，请先调用 /ingest/file 或 /ingest/directory 上传文档入库",
         )
 
     try:
-        result = rag_chain.answer(request.question.strip())
+        result = await rag_chain.aanswer(request.question.strip())
     except Exception as error:
         raise HTTPException(status_code=500, detail=f"RAG 链执行失败：{error}")
 
@@ -418,7 +433,7 @@ async def query(request: QueryRequest):
 @app.delete("/index")
 async def delete_index():
     """清空向量库（删除 Milvus collection + BM25 语料副本，并重置单例）。"""
-    clear()  # clear() 内部已重置并重建单例，无需 cache_clear
+    await aclear()  # clear() 内部已重置并重建单例，无需 cache_clear
     return {"status": "ok", "detail": "向量库已清空"}
 
 

@@ -41,7 +41,9 @@ Agent 里的工具会失败，而且**必然会失败**：网络抖一下、API 
     而且最后加一点随机抖动，避免多个请求"整齐划一"地同时重试造成惊群。
 """
 
+import asyncio
 import functools
+import inspect
 import logging
 import random
 import time
@@ -228,6 +230,49 @@ def resilient(tool_name: str, fallback_hint: str = "") -> Callable:
     """
 
     def decorator(func: Callable) -> Callable:
+        if inspect.iscoroutinefunction(func):
+            @functools.wraps(func)
+            async def async_wrapper(*args: Any, **kwargs: Any) -> str:
+                max_attempts = max(1, agent_settings.TOOL_MAX_ATTEMPTS)
+
+                for attempts in range(1, max_attempts + 1):
+                    try:
+                        return await func(*args, **kwargs)
+                    except asyncio.CancelledError:
+                        # 上游取消（客户端断开/服务关闭）必须继续传播。
+                        raise
+                    except Exception as error:  # noqa: BLE001
+                        retryable, reason = classify_exception(error)
+                        if not retryable or attempts >= max_attempts:
+                            logger.warning(
+                                "[%s] 第 %d/%d 次失败（不再重试）：%s",
+                                tool_name, attempts, max_attempts, reason,
+                            )
+                            return format_failure(
+                                tool_name,
+                                reason,
+                                attempts,
+                                retryable,
+                                fallback_hint,
+                            )
+
+                        logger.warning(
+                            "[%s] 第 %d/%d 次失败（将重试）：%s",
+                            tool_name, attempts, max_attempts, reason,
+                        )
+                        delay = min(
+                            agent_settings.TOOL_RETRY_MAX_DELAY,
+                            agent_settings.TOOL_RETRY_BASE_DELAY
+                            * (2 ** (attempts - 1)),
+                        )
+                        await asyncio.sleep(delay + random.uniform(0, 0.3))
+
+                return format_failure(
+                    tool_name, "未知错误", max_attempts, False, fallback_hint
+                )
+
+            return async_wrapper
+
         @functools.wraps(func)  # 保留 __name__ / __doc__ / 签名，@tool 才能正确解析
         def wrapper(*args: Any, **kwargs: Any) -> str:
             max_attempts = max(1, agent_settings.TOOL_MAX_ATTEMPTS)

@@ -22,6 +22,8 @@
 # - rag-from-scratch Part 1（Indexing）：分块大小/重叠对检索质量的影响
 # ============================================================================
 
+import asyncio
+
 from langchain_community.document_loaders import PyPDFLoader , TextLoader
 from langchain_text_splitters import RecursiveCharacterTextSplitter
 from langchain_core.documents import Document
@@ -242,3 +244,17 @@ def split_documents(docs: List[Document]) -> List[Document]:
     # 场景：PDF 里的纯图片页、只有页眉页码的页面，切完就是空的。
     # 空块入库后会成为"永远匹配不上任何问题的噪声向量"，必须剔除。
     return [c for c in chunks if c.page_content.strip()]
+
+
+# LangChain 的多数文档 Loader 仍是同步接口；这些异步门面把磁盘读取和
+# PDF/docx 解析移到工作线程，避免阻塞 FastAPI 的事件循环。
+async def aload_document(file_path: str) -> List[Document]:
+    return await asyncio.to_thread(load_document, file_path)
+
+
+async def aload_directory(dir_path: str = None) -> List[Document]:
+    return await asyncio.to_thread(load_directory, dir_path)
+
+
+async def asplit_documents(docs: List[Document]) -> List[Document]:
+    return await asyncio.to_thread(split_documents, docs)

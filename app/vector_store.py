@@ -32,6 +32,7 @@
 
 from __future__ import annotations
 
+import asyncio
 import hashlib
 import json
 import os
@@ -722,3 +723,33 @@ def stats() -> Dict[str, object]:
         "bm25_corpus_chunks": bm25_docs,
         "bm25_ready": bm25_docs > 0,
     }
+
+
+# Milvus Lite、Embedding 和 BM25 当前主要暴露同步 API。统一通过这些异步
+# 门面进入工作线程，让 Web/Agent 的事件循环可以继续服务其他请求。
+async def amulti_query_search(
+    queries: Sequence[str],
+    k: Optional[int] = None,
+    strategy: str = "rrf",
+) -> List[Document]:
+    return await asyncio.to_thread(multi_query_search, queries, k, strategy)
+
+
+async def aadd_documents(docs: List[Document]) -> int:
+    return await asyncio.to_thread(add_documents, docs)
+
+
+async def acount() -> int:
+    return await asyncio.to_thread(count)
+
+
+async def aclear() -> None:
+    await asyncio.to_thread(clear)
+
+
+async def awarmup() -> None:
+    await asyncio.to_thread(warmup)
+
+
+async def astats() -> Dict[str, object]:
+    return await asyncio.to_thread(stats)

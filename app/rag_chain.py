@@ -37,6 +37,7 @@
 
 from __future__ import annotations
 
+import asyncio
 import os
 import re
 import unicodedata
@@ -49,7 +50,8 @@ from langchain_openai import ChatOpenAI
 from langgraph.graph import END, StateGraph
 
 from app.config import settings
-from app.vector_store import get_vector_store, multi_query_search, warmup
+from app.llm_cache import get_llm_cache
+from app.vector_store import amulti_query_search, warmup
 
 # ================================================================ LLM
 
@@ -66,6 +68,7 @@ def get_llm(**kwargs) -> ChatOpenAI:
         api_key=settings.OPENAI_API_KEY,
         base_url=settings.OPENAI_BASE_URL,
         temperature=settings.LLM_TEMPERATURE,
+        cache=get_llm_cache(),
         extra_body={"thinking": {"type": "disabled"}},
         **kwargs,
     )
@@ -441,7 +444,7 @@ def _format_context(documents: List[Document]) -> str:
 # ================================================================ 节点函数
 
 
-def transform_query(state: GraphState) -> dict:
+async def transform_query(state: GraphState) -> dict:
     """节点 0【新增】：查询变换。
 
     对应 LlamaIndex Query Transformations 里的三件套，按配置三选一：
@@ -468,7 +471,7 @@ def transform_query(state: GraphState) -> dict:
     if mode == "hyde":
         try:
             chain = HYDE_PROMPT | get_llm() | StrOutputParser()
-            hypothetical = chain.invoke({"question": question}).strip()
+            hypothetical = (await chain.ainvoke({"question": question})).strip()
         except Exception as error:
             print(f"    [warn] HyDE 生成失败，退回原问题：{error}")
             hypothetical = ""
@@ -484,7 +487,9 @@ def transform_query(state: GraphState) -> dict:
     # 默认：multi_query（RAG-Fusion）
     try:
         chain = MULTI_QUERY_PROMPT | get_llm() | StrOutputParser()
-        raw = chain.invoke({"question": question, "num_queries": settings.NUM_QUERIES})
+        raw = await chain.ainvoke(
+            {"question": question, "num_queries": settings.NUM_QUERIES}
+        )
         variants = _parse_query_list(raw, limit=settings.NUM_QUERIES)
     except Exception as error:
         print(f"    [warn] 多查询生成失败，退回原问题：{error}")
@@ -501,7 +506,7 @@ def transform_query(state: GraphState) -> dict:
     return {"queries": queries, "transform_mode": f"multi_query({len(queries)})"}
 
 
-def retrieve(state: GraphState) -> dict:
+async def retrieve(state: GraphState) -> dict:
     """节点 1【升级】：混合检索（稠密向量 ⊕ BM25 稀疏，RRF 融合）。
 
     与升级前的区别：以前是 search(question) 单路向量检索；
@@ -514,7 +519,7 @@ def retrieve(state: GraphState) -> dict:
     queries = state.get("queries") or [state["question"]]
     print(f"--->[节点]retrieve: {len(queries)} 条查询 × 混合检索")
 
-    documents = multi_query_search(queries, k=settings.FUSION_TOP_K)
+    documents = await amulti_query_search(queries, k=settings.FUSION_TOP_K)
     print(f"   融合后候选：{len(documents)} 条（精排前）")
 
     return {
@@ -524,7 +529,7 @@ def retrieve(state: GraphState) -> dict:
     }
 
 
-def rerank_documents(state: GraphState) -> dict:
+async def rerank_documents(state: GraphState) -> dict:
     """节点 2【新增】：交叉编码器精排。
 
     Cohere Rerank（也是 LlamaIndex 官方推荐的 Node Postprocessor）：
@@ -561,7 +566,9 @@ def rerank_documents(state: GraphState) -> dict:
     try:
         # 注意：精排的 query 用"当前问题"而不是变换出来的查询。
         # 变换查询是为了"捞得全"，精排要判断的是"跟用户真正想问的有多相关"。
-        reranked = compressor.compress_documents(documents, question)
+        reranked = await asyncio.to_thread(
+            compressor.compress_documents, documents, question
+        )
     except Exception as error:
         print(f"    [warn] 精排调用失败，保留融合结果：{error}")
         return {"reranked": False}
@@ -578,7 +585,7 @@ def rerank_documents(state: GraphState) -> dict:
     return {"documents": kept, "reranked": True}
 
 
-def grade_documents(state: GraphState) -> dict:
+async def grade_documents(state: GraphState) -> dict:
     """节点 3：逐条评估检索文档，过滤明显无关的内容。
 
     精排已经砍到 5 条左右，这里的 LLM 调用次数因此大幅下降。
@@ -587,28 +594,29 @@ def grade_documents(state: GraphState) -> dict:
 
     question = state["question"]
     grader = _doc_grader()
-    filtered_documents: List[Document] = []
-
-    for document in state["documents"]:
+    async def grade_one(document: Document) -> tuple[Document, bool]:
         try:
-            score_text = grader.invoke({
+            score_text = await grader.ainvoke({
                 "question": question,
                 "document": document.page_content[:2000],
             })
-            if _parse_yes_no(score_text, default=True):  # 解析失败时保守保留
-                filtered_documents.append(document)
+            return document, _parse_yes_no(score_text, default=True)
         except Exception as error:
             # 评分服务发生异常时，保守地保留文档，
             # 避免因为评分失败而丢失可能有用的上下文。
             print(f"    [warn]评分失败，保留该文档：{error}")
-            filtered_documents.append(document)
+            return document, True
+
+    # 文档评分互不依赖，并发请求可显著降低 RERANK_TOP_N > 1 时的总延迟。
+    graded = await asyncio.gather(*(grade_one(doc) for doc in state["documents"]))
+    filtered_documents = [document for document, keep in graded if keep]
 
     print(f"   相关文档数:{len(filtered_documents)}")
 
     return {"documents": filtered_documents}
 
 
-def rewrite_query(state: GraphState) -> dict:
+async def rewrite_query(state: GraphState) -> dict:
     """节点 4：将当前问题改写为更合适向量检索的形式。
 
     如果改写结果与当前问题相同，则设置 rewrite_unchanged=True。
@@ -620,9 +628,9 @@ def rewrite_query(state: GraphState) -> dict:
     rewrite_chain = REWRITE_PROMPT | get_llm() | StrOutputParser()
 
     try:
-        rewritten_question = rewrite_chain.invoke({
+        rewritten_question = (await rewrite_chain.ainvoke({
             "question": current_question,
-        }).strip()
+        })).strip()
         # 当模型返回空字符串时，当作没有改写成功。
         if not rewritten_question:
             rewritten_question = current_question
@@ -652,7 +660,7 @@ def rewrite_query(state: GraphState) -> dict:
     }
 
 
-def generate(state: GraphState) -> dict:
+async def generate(state: GraphState) -> dict:
     """节点 5：根据相关文档生成答案。
 
     如果没有相关文档，则直接返回兜底拒答。
@@ -676,7 +684,7 @@ def generate(state: GraphState) -> dict:
     generate_chain = prompt | get_llm() | StrOutputParser()
 
     try:
-        answer = generate_chain.invoke({
+        answer = await generate_chain.ainvoke({
             "question": state["question"],
             "context": context,
         })
@@ -696,7 +704,7 @@ def generate(state: GraphState) -> dict:
     }
 
 
-def check_groundedness(state: GraphState) -> dict:
+async def check_groundedness(state: GraphState) -> dict:
     """节点 6：检查生成答案是否由检索文档支撑（防幻觉自检）。
 
     失败后的处理由 GROUNDEDNESS_ACTION 控制（见 app/config.py）：
@@ -739,7 +747,7 @@ def check_groundedness(state: GraphState) -> dict:
 
     try:
         grader = _groundedness_grader()
-        score_text = grader.invoke({
+        score_text = await grader.ainvoke({
             "documents": document_text[:6000],
             "generation": state["generation"],
         })
@@ -932,11 +940,28 @@ class RAGChain:
             warmup()
 
     def answer(self, question: str, include_documents: bool = False) -> dict:
+        """同步兼容入口；异步服务代码应使用 :meth:`aanswer`."""
+        try:
+            asyncio.get_running_loop()
+        except RuntimeError:
+            async def run_once() -> dict:
+                try:
+                    return await self.aanswer(question, include_documents)
+                finally:
+                    # asyncio.run 每次都会创建新 loop，不能把连接池留给下一轮。
+                    from app.redis_client import close_redis
+
+                    await close_redis()
+
+            return asyncio.run(run_once())
+        raise RuntimeError("事件循环中不能调用 answer()，请改用 await aanswer()")
+
+    async def aanswer(self, question: str, include_documents: bool = False) -> dict:
         """执行完整的 Agentic RAG 流程。
 
         include_documents=True 时额外返回完整检索上下文（RAGAs 评估需要）。
         """
-        result = self.app.invoke(
+        result = await self.app.ainvoke(
             {
                 "question": question,
                 "original_question": question,

@@ -179,10 +179,19 @@ class Settings:
     LANGSMITH_PROJECT: str = os.getenv("LANGSMITH_PROJECT", "MyFirstProject")
 
 
-    REDIS_URL: str = os.getenv("REDIS_URL" ,     "redis://localhost:6379/0")
-
-    APP_NAME: str = os.getenv("APP_NAME","fastapi-redis-demo")
-    ACCESS_TOKEN_EXPIRE_SECONDS: int = os.getenv("ACCESS_TOKEN_EXPIRE_SECONDS" ,3600 )
+    # ------------------------------------------------------------ Redis / LLM 缓存
+    # 缓存挂在 LangChain 的模型层，因此 RAG 的查询变换、评分、答案生成以及
+    # ResearchAgent 的推理调用都会自动复用；Redis 故障时会旁路，不阻断问答。
+    REDIS_URL: str = os.getenv("REDIS_URL", "redis://localhost:6379/0")
+    LLM_CACHE_ENABLED: bool = _env_bool("LLM_CACHE_ENABLED", "true")
+    LLM_CACHE_TTL_SECONDS: int = int(os.getenv("LLM_CACHE_TTL_SECONDS", "3600"))
+    LLM_CACHE_PREFIX: str = os.getenv("LLM_CACHE_PREFIX", "rag:llm-cache:v1")
+    REDIS_SOCKET_TIMEOUT_SECONDS: float = float(
+        os.getenv("REDIS_SOCKET_TIMEOUT_SECONDS", "1.5")
+    )
+    LLM_CACHE_FAILURE_COOLDOWN_SECONDS: float = float(
+        os.getenv("LLM_CACHE_FAILURE_COOLDOWN_SECONDS", "30")
+    )
 
     # ------------------------------------------------------------ 派生属性
     @property

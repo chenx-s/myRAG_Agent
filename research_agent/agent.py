@@ -47,14 +47,21 @@ Day 19（Memory）、Day 21（周度项目构建）。
 import logging
 import sys
 from typing import List, Optional
+import asyncio
 
 from langchain.agents import create_agent
 from langchain_core.messages import AIMessage, HumanMessage, ToolMessage
 from langchain_openai import ChatOpenAI
 from langgraph.checkpoint.memory import InMemorySaver
 
+from app.llm_cache import get_llm_cache
 from research_agent.settings import agent_settings
-from research_agent.tools import ALL_TOOLS, describe_tools, warmup_local_knowledge
+from research_agent.tools import (
+    ALL_TOOLS,
+    aclose_tool_clients,
+    awarmup_local_knowledge,
+    describe_tools,
+)
 
 # Windows 终端默认可能是 GBK，打印中文/emoji 会 UnicodeEncodeError。
 # 这里把标准输出强制成 UTF-8（拿不到 reconfigure 的老环境就跳过）。
@@ -143,6 +150,7 @@ def build_llm() -> ChatOpenAI:
         api_key=agent_settings.LLM_API_KEY,
         base_url=agent_settings.LLM_BASE_URL,
         temperature=agent_settings.LLM_TEMPERATURE,
+        cache=get_llm_cache(),
         # GLM 的思考模式在 Agent 场景下会拖慢工具调用，
         # 且它输出的"思考过程"会混进消息流干扰解析，这里显式关掉
         extra_body={"thinking": {"type": "disabled"}},
@@ -194,6 +202,7 @@ class ResearchAgent:
         self._checkpointer = InMemorySaver()
         self.agent = build_agent(self._checkpointer)
         self.thread_id = thread_id
+        self._sync_runner: asyncio.Runner | None = None
 
     # ------------------------------------------------------------------ 内部
     def _invoke_config(self) -> dict:
@@ -267,13 +276,25 @@ class ResearchAgent:
 
     # ------------------------------------------------------------------ 对外
     def chat(self, question: str, verbose: bool = True) -> dict:
+        """同步兼容入口；异步应用应使用 :meth:`achat`."""
+        try:
+            asyncio.get_running_loop()
+        except RuntimeError:
+            # Runner 持有一个长期 event loop，使 Redis/httpx 连接池可以跨多轮
+            # 同步 chat() 调用安全复用。
+            if self._sync_runner is None:
+                self._sync_runner = asyncio.Runner()
+            return self._sync_runner.run(self.achat(question, verbose))
+        raise RuntimeError("事件循环中不能调用 chat()，请改用 await achat()")
+
+    async def achat(self, question: str, verbose: bool = True) -> dict:
         """问一个问题，返回 {"answer": 答案, "trace": 工具调用轨迹}。
 
         verbose=True 时会把 Agent 的"思考-行动-观察"过程打印到终端，
         这是理解 ReAct 循环最直观的方式。
         """
         try:
-            result = self.agent.invoke(
+            result = await self.agent.ainvoke(
                 {"messages": [HumanMessage(content=question)]},
                 config=self._invoke_config(),
             )
@@ -340,6 +361,22 @@ class ResearchAgent:
         self.thread_id = thread_id or f"research-{uuid.uuid4().hex[:8]}"
         logger.info("已切换到新会话：%s", self.thread_id)
 
+    async def aclose(self) -> None:
+        """释放 Redis 与工具 HTTP 连接池。"""
+        from app.redis_client import close_redis
+
+        try:
+            await aclose_tool_clients()
+        finally:
+            await close_redis()
+
+    def close(self) -> None:
+        """释放同步 ``chat`` 创建的长期事件循环。"""
+        if self._sync_runner is not None:
+            self._sync_runner.run(self.aclose())
+            self._sync_runner.close()
+            self._sync_runner = None
+
 
 # ===========================================================================
 # 四、命令行交互
@@ -357,7 +394,7 @@ HELP_TEXT = """
 """
 
 
-def main() -> int:
+async def amain() -> int:
     """命令行入口：交互式研究助手。"""
     print("=" * 72)
     print(" 研究助手 Agent  ——  本地知识库 + 联网搜索")
@@ -384,15 +421,16 @@ def main() -> int:
     # 而不是让用户在第一次提问后干等。
     # 想跳过（比如只打算用联网搜索）就把 .env 里的 AGENT_WARMUP_ON_START 设成 false。
     if agent_settings.WARMUP_ON_START:
-        warmup_local_knowledge(verbose=True)
+        await awarmup_local_knowledge(verbose=True)
 
     verbose = True
 
     while True:
         try:
-            question = input("\n你 > ").strip()
+            question = (await asyncio.to_thread(input, "\n你 > ")).strip()
         except (EOFError, KeyboardInterrupt):
             print("\n再见。")
+            await agent.aclose()
             return 0
 
         if not question:
@@ -401,6 +439,7 @@ def main() -> int:
         # ---- 内置命令 ----
         if question in ("/quit", "/exit", "q", "exit"):
             print("再见。")
+            await agent.aclose()
             return 0
         if question == "/new":
             agent.new_session()
@@ -412,7 +451,7 @@ def main() -> int:
             continue
         if question == "/warmup":
             print()
-            warmup_local_knowledge(verbose=True)
+            await awarmup_local_knowledge(verbose=True)
             continue
         if question == "/quiet":
             verbose = not verbose
@@ -424,12 +463,17 @@ def main() -> int:
 
         # ---- 正常提问 ----
         print("\n🤔 Agent 思考中 ...")
-        outcome = agent.chat(question, verbose=verbose)
+        outcome = await agent.achat(question, verbose=verbose)
 
         print("\n" + "─" * 72)
         print("助手 >")
         print(outcome["answer"])
         print("─" * 72)
+
+
+def main() -> int:
+    """同步命令行入口；内部始终复用同一个事件循环。"""
+    return asyncio.run(amain())
 
 
 if __name__ == "__main__":

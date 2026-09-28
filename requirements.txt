@@ -13,6 +13,7 @@ uvicorn[standard]>=0.30
 python-multipart>=0.0.9      # /ingest/file 的 UploadFile 依赖它，缺了会 500
 pydantic>=2.7
 python-dotenv>=1.0
+redis>=5.0                  # asyncio 连接池 + LLM 响应缓存
 
 # ---------------------------------------------------------------- LangChain 生态
 langchain>=1.3
@@ -21,6 +22,10 @@ langchain-community>=0.4     # BM25Retriever + 各种 DocumentLoader
 langchain-text-splitters>=1.0
 langgraph>=1.2               # Agentic RAG 的状态图
 langchain-openai>=1.0        # 走 OpenAI 兼容协议接智谱 GLM
+
+# ---------------------------------------------------------------- Agent 工具
+tavily-python>=0.8.3         # ResearchAgent 异步联网搜索与连接池关闭
+tenacity>=8.2                # 工具重试与指数退避
 
 # ---------------------------------------------------------------- Embedding（本地）
 langchain-huggingface>=1.0

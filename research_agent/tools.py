@@ -33,8 +33,10 @@
     并明确写出参数该怎么填。
 """
 
+import asyncio
 import logging
 import sys
+import threading
 from pathlib import Path
 from typing import List
 
@@ -78,20 +80,23 @@ class _RagHolder:
 
     _instance = None
     _error: Exception | None = None
+    _lock = threading.Lock()
 
     @classmethod
     def get(cls):
         if cls._instance is None and cls._error is None:
-            try:
-                # 延迟 import：避免 Agent 启动时就拉起一大堆 RAG 依赖
-                from app.rag_chain import RAGChain
+            with cls._lock:
+                if cls._instance is None and cls._error is None:
+                    try:
+                        # 延迟 import：避免 Agent 启动时就拉起一大堆 RAG 依赖
+                        from app.rag_chain import RAGChain
 
-                logger.info("正在初始化本地知识库（首次较慢，需加载 Embedding 模型）...")
-                cls._instance = RAGChain(warm=True)
-                logger.info("本地知识库就绪。")
-            except Exception as error:  # noqa: BLE001
-                cls._error = error
-                logger.error("本地知识库初始化失败：%s", error)
+                        logger.info("正在初始化本地知识库（首次较慢，需加载 Embedding 模型）...")
+                        cls._instance = RAGChain(warm=True)
+                        logger.info("本地知识库就绪。")
+                    except Exception as error:  # noqa: BLE001
+                        cls._error = error
+                        logger.error("本地知识库初始化失败：%s", error)
 
         if cls._error is not None:
             # 初始化失败属于永久性故障 —— 重试不会让模型突然下载成功，
@@ -100,6 +105,11 @@ class _RagHolder:
                 f"本地知识库初始化失败：{type(cls._error).__name__}: {cls._error}"
             )
         return cls._instance
+
+    @classmethod
+    async def aget(cls):
+        # 模型加载和 Milvus 初始化没有异步 API，移入工作线程。
+        return await asyncio.to_thread(cls.get)
 
 
 def _format_rag_result(result: dict, max_sources: int = 3) -> str:
@@ -159,7 +169,7 @@ def _format_rag_result(result: dict, max_sources: int = 3) -> str:
     "search_local_knowledge",
     fallback_hint="本地知识库不可用时，改用 search_web 联网搜索。",
 )
-def search_local_knowledge(query: str) -> str:
+async def search_local_knowledge(query: str) -> str:
     """在【本地知识库】中检索用户自己上传的文档资料。
 
     知识库内容：用户事先上传并索引过的文件（学术论文、技术文档、个人笔记等）。
@@ -181,10 +191,10 @@ def search_local_knowledge(query: str) -> str:
         好：「SAR 图像相干斑抑制的深度学习方法」
         差：「SAR图像相干斑抑制有哪些深度学习方法呀？」（口语化会干扰向量检索）
     """
-    rag = _RagHolder.get()
+    rag = await _RagHolder.aget()
     logger.info("[本地检索] query=%r", query)
 
-    result = rag.answer(query, include_documents=False)
+    result = await rag.aanswer(query, include_documents=False)
     num_docs = result.get("num_documents", 0)
     logger.info("[本地检索] 命中 %d 篇文档", num_docs)
 
@@ -212,10 +222,16 @@ class _TavilyHolder:
                     "TAVILY_API_KEY=tvly-你的key（免费申请：https://tavily.com）"
                 )
 
-            from tavily import TavilyClient
+            from tavily import AsyncTavilyClient
 
-            cls._client = TavilyClient(api_key=agent_settings.TAVILY_API_KEY)
+            cls._client = AsyncTavilyClient(api_key=agent_settings.TAVILY_API_KEY)
         return cls._client
+
+    @classmethod
+    async def close(cls) -> None:
+        if cls._client is not None:
+            await cls._client.close()
+            cls._client = None
 
 
 def _format_web_results(query: str, payload: dict) -> str:
@@ -275,7 +291,7 @@ def _format_web_results(query: str, payload: dict) -> str:
     "search_web",
     fallback_hint="联网搜索不可用时，改用 search_local_knowledge 查本地知识库。",
 )
-def search_web(query: str, max_results: int = 3) -> str:
+async def search_web(query: str, max_results: int = 3) -> str:
     """通过【互联网搜索】获取最新、公开的信息。
 
     数据来源：Tavily 搜索 API，结果是实时抓取的网页内容。
@@ -309,7 +325,7 @@ def search_web(query: str, max_results: int = 3) -> str:
 
     logger.info("[联网搜索] query=%r max_results=%d", query, safe_max)
 
-    payload = client.search(
+    payload = await client.search(
         query=query,
         max_results=safe_max,
         search_depth=agent_settings.WEB_SEARCH_DEPTH,
@@ -366,6 +382,16 @@ def warmup_local_knowledge(verbose: bool = True) -> tuple[bool, str]:
             print(f"  ⚠️ 本地知识库预热失败：{message}")
             print("     不影响联网搜索工具，Agent 仍可正常工作。")
         return False, message
+
+
+async def awarmup_local_knowledge(verbose: bool = True) -> tuple[bool, str]:
+    """异步预热入口，避免模型加载阻塞 Agent 事件循环。"""
+    return await asyncio.to_thread(warmup_local_knowledge, verbose)
+
+
+async def aclose_tool_clients() -> None:
+    """Close async HTTP clients owned by Agent tools."""
+    await _TavilyHolder.close()
 
 
 def describe_tools() -> str:

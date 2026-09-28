@@ -8,6 +8,7 @@
 - Embedding：本地 `BAAI/bge-small-en-v1.5`（384 维，不依赖外部 API）
 - 向量库：Milvus（默认 Milvus Lite 本地文件模式，零部署）
 - 精排：Cohere Rerank `rerank-v3.5`
+- 缓存：Redis（LangChain LLM 级缓存，默认 TTL 1 小时，故障自动旁路）
 
 ---
 
@@ -27,6 +28,8 @@ RAG_mine/
 │   ├── __init__.py
 │   ├── config.py             # 全局配置（模型 / 路径 / 超参数）
 │   ├── document_processer.py # 文档加载与分块
+│   ├── redis_client.py       # 异步 Redis 连接池与健康检查
+│   ├── llm_cache.py          # Redis LLM 响应缓存
 │   ├── vector_store.py       # Milvus + BM25 混合检索 + RRF 融合
 │   └── rag_chain.py          # LangGraph Agentic RAG 状态图
 ├── data/                     # 知识库源文档
@@ -49,7 +52,10 @@ pip install -r requirements.txt
 # 2. 检查 .env（已配好；只需确认 API Key 有效）
 #    注意：Milvus 地址的变量名是 RAG_MILVUS_URI，不是 MILVUS_URI！
 
-# 3. 启动
+# 3. 启动 Redis（已有 Redis 服务可跳过）
+docker run -d --name rag-redis -p 6379:6379 redis:7-alpine
+
+# 4. 启动 API
 python main.py
 # 或 uvicorn main:app --reload --port 8000
 ```
@@ -57,6 +63,12 @@ python main.py
 打开 http://127.0.0.1:8000/docs 可以直接在 Swagger UI 里试所有接口。
 
 首次启动会下载 Embedding 模型（约 130MB），并构建 BM25 倒排索引。
+
+LLM 缓存作用于 RAG 和 ResearchAgent 的全部模型调用；缓存键同时包含完整提示词与
+模型配置，因此切换模型、温度或上下文不会误命中。可在 `.env` 中通过
+`LLM_CACHE_ENABLED`、`LLM_CACHE_TTL_SECONDS`、`LLM_CACHE_PREFIX` 调整。
+Redis 暂时不可用时请求会直接调用 LLM，不会因缓存故障而失败；`/health` 的
+`llm_cache` 字段可查看连接状态与进程内命中/未命中计数。
 
 ---
 
