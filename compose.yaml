@@ -31,6 +31,8 @@ services:
       # point back to this application container.
       REDIS_URL: redis://redis:6379/0
       LLM_CACHE_ENABLED: "true"
+      METRICS_ENABLED: "true"
+      METRICS_PATH: /metrics
       RAG_MILVUS_URI: /app/vector_db/milvus_rag.db
       VECTOR_DB_PATH: /app/vector_db
       DATA_DIR: /app/data

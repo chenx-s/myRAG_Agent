@@ -7,20 +7,6 @@
 #            --> [本文件] split_documents（切块）
 #            --> vector_store.add_documents（BGE 向量化 + 写入 Milvus）
 #            --> rag_chain（检索 + 生成）
-#
-# 【本次升级说明】
-# 本文件逻辑与你原来的版本**完全一致**，没有做任何功能改动。
-# 之所以保留原样，是因为它在升级后的链路里依然正确：
-#   - chunk_size / chunk_overlap 依然从 settings 读取，改 .env 就能生效；
-#   - metadata 里的 source / filename / page / start_index 恰好是
-#     升级后「BM25 语料副本」和「引用溯源」所需要的字段（见 vector_store._doc_key）。
-# 唯一的改动是：补全了注释。逻辑一行未动。
-#
-# 参考来源：
-# - llm-universe C3（搭建知识库）：读取、清洗与切片的标准做法
-# - llm-cookbook《LangChain Chat With Your Data》：DocumentLoader + TextSplitter 标准用法
-# - rag-from-scratch Part 1（Indexing）：分块大小/重叠对检索质量的影响
-# ============================================================================
 
 import asyncio
 
@@ -32,11 +18,6 @@ import os
 from app.config import settings
 from pathlib import Path
 
-# 支持的文件后缀集合。
-# 用途有二：
-#   1) load_document 里做后缀分派（决定用哪个 Loader）；
-#   2) load_directory 里做白名单过滤（非白名单文件直接跳过，不报错）。
-# 想新增格式（比如 .pptx），除了往这里加后缀，还要在下面对应位置加一个 elif 分支。
 SUPPORTED_EXTENSIONS = {".pdf" , ".txt" , ".md" , ".docx" , ".html" , ".htm" , ".csv"}
 
 
@@ -71,13 +52,6 @@ def load_document(file_path: str) -> List[Document]:
     # .lower() 是为了兼容 .PDF / .Pdf 这类大小写写法
     suffix = path.suffix.lower()
 
-    # --------------------------------------------------------------
-    # 按后缀分派 Loader。
-    # 注意这里用的是**函数内局部 import**，而不是文件顶部统一 import。
-    # 原因：这些 Loader 各自依赖不同的第三方库（pypdf / docx2txt / beautifulsoup4 …），
-    # 局部导入意味着"只有真的处理到这种格式时才需要装那个库"，
-    # 否则你只想跑个 txt，却因为没装 docx2txt 而整个模块导入失败。
-    # --------------------------------------------------------------
     if suffix == ".pdf":
         # PDF：按页解析，每页一个 Document，metadata 里带 page 字段
         from langchain_community.document_loaders import PyPDFLoader
@@ -199,12 +173,6 @@ def split_documents(docs: List[Document]) -> List[Document]:
 
     返回：
         切分并清洗后的 chunk 列表，可直接交给 vector_store.add_documents。
-
-    为什么必须切块？
-        - LLM 上下文窗口有限，不可能把整本书塞进去；
-        - 检索时"块"是匹配单位，块太大 → 夹带无关内容，稀释相关性；
-                       块太小 → 语义不完整，答非所问。
-        所以 chunk_size / chunk_overlap 是 RAG 里最值得调的参数之一。
 
     切分策略（RecursiveCharacterTextSplitter）：
         它按 ["\n\n", "\n", "。", "；", " ", ""] 这个**从粗到细**的分隔符列表递归尝试：

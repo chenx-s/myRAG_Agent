@@ -14,6 +14,9 @@ python-multipart>=0.0.9      # /ingest/file 的 UploadFile 依赖它，缺了会
 pydantic>=2.7
 python-dotenv>=1.0
 redis>=5.0                  # asyncio 连接池 + LLM 响应缓存
+fastapi-redis-sdk>=0.8,<1   # main.py 中 FastAPIRedis / AsyncRedisDep
+prometheus-client>=0.20,<1
+prometheus-fastapi-instrumentator>=7.1,<9
 
 # ---------------------------------------------------------------- LangChain 生态
 langchain>=1.3

@@ -1,6 +1,4 @@
 # 配置（模型， 路径， 超参数）
-#
-# 升级版：在原配置基础上新增四组配置
 #   1) Milvus 向量库（替代 Chroma/FAISS）
 #   2) 混合检索 Hybrid Search（稠密向量 + BM25 稀疏，RRF 融合）
 #   3) 查询变换 Query Transformations（multi-query / HyDE）
@@ -12,24 +10,6 @@ from dotenv import load_dotenv
 
 load_dotenv()
 
-
-# ================================================================
-# 【踩坑警告】不要把 Milvus 地址写成 MILVUS_URI
-# ================================================================
-# pymilvus 3.x 的 settings.Config 里有这么一行：
-#     MILVUS_URI = str(os.getenv("MILVUS_URI", ""))
-# 而 pymilvus/orm/connections.py 在**模块导入时**就会拿这个值去解析：
-#     address, parsed_uri = self.__parse_address_from_uri(Config.MILVUS_URI)
-# 解析失败直接抛 ConnectionConfigException —— 注意，是 import pymilvus 就炸，
-# 还没等你调用任何 Milvus 接口。
-#
-# 也就是说：只要环境变量 MILVUS_URI 是个本地文件路径（./vector_db/x.db），
-# 下面这行就会报 "Illegal uri: [...], expected form 'http[s]://...'"：
-#     import pymilvus
-#
-# 所以本项目的配置项叫 RAG_MILVUS_URI，绕开这个保留名。
-# 下面这段是防御：万一你的 .env 或系统环境里已经有 MILVUS_URI，
-# 且它不是合法的 http(s) 地址，就先摘掉，避免污染 pymilvus。
 _reserved_uri = os.environ.get("MILVUS_URI", "")
 if _reserved_uri and not _reserved_uri.startswith(("http://", "https://")):
     os.environ.pop("MILVUS_URI", None)
@@ -38,15 +18,6 @@ if _reserved_uri and not _reserved_uri.startswith(("http://", "https://")):
         "它会让 import pymilvus 直接失败；请改用 RAG_MILVUS_URI。"
     )
 
-
-# ================================================================
-# 降低第三方库的日志噪音
-# ================================================================
-# Milvus Lite 内嵌了一个 gRPC 服务，默认会往终端刷大量
-#   WARNING too_many_pings ... GOAWAY
-# 这类 INFO 级别的心跳告警 —— 它不影响功能，但会把有用的日志淹没。
-# 下面几个环境变量必须在 grpc 初始化之前设置才生效，
-# 所以放在 config.py 顶层（它会被最早导入）。
 os.environ.setdefault("GRPC_VERBOSITY", "ERROR")
 os.environ.setdefault("GRPC_GO_LOG_SEVERITY_LEVEL", "ERROR")
 os.environ.setdefault("GRPC_GO_LOG_VERBOSITY_LEVEL", "ERROR")
@@ -59,17 +30,6 @@ def _env_bool(key: str, default: str = "false") -> bool:
 
 class Settings:
     """全局配置的唯一来源。
-
-    【怎么用】
-        整个项目里任何地方要读配置，都是 `from app.config import settings`，
-        然后用 `settings.XXX`。不要去别处再写一遍 `os.getenv(...)` ——
-        那样一旦配置项改名或加默认值，就会漏改。
-
-    【怎么改配置】
-        改 `.env` 文件，不要改这个文件。
-        下面每个属性都是 `os.getenv("环境变量名", "默认值")` 的形式：
-        `.env` 里有 → 用 `.env` 的值；`.env` 里没有 → 用括号里的默认值。
-        改完 `.env` 需要重启服务才生效（因为类属性在 import 时就求值完了）。
 
     【属性分组】
         LLM            —— 大模型（智谱 GLM，走 OpenAI 兼容协议）

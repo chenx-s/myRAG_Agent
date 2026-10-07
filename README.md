@@ -9,6 +9,7 @@
 - 向量库：Milvus（默认 Milvus Lite 本地文件模式，零部署）
 - 精排：Cohere Rerank `rerank-v3.5`
 - 缓存：Redis（LangChain LLM 级缓存，默认 TTL 1 小时，故障自动旁路）
+- 可观测性：Prometheus（API QPS、延迟、状态码/错误率、进行中请求）
 
 ---
 
@@ -30,6 +31,7 @@ RAG_mine/
 │   ├── document_processer.py # 文档加载与分块
 │   ├── redis_client.py       # 异步 Redis 连接池与健康检查
 │   ├── llm_cache.py          # Redis LLM 响应缓存
+│   ├── observability.py      # Prometheus FastAPI 指标配置
 │   ├── vector_store.py       # Milvus + BM25 混合检索 + RRF 融合
 │   └── rag_chain.py          # LangGraph Agentic RAG 状态图
 ├── data/                     # 知识库源文档
@@ -121,11 +123,63 @@ docker build -t rag-mine:latest .
 | 方法 | 路径 | 说明 |
 |---|---|---|
 | GET | `/health` | 健康检查，回显**全部生效参数**（调参先看它） |
+| GET | `/metrics` | Prometheus 文本格式指标（不显示在 Swagger 中） |
 | POST | `/ingest/file` | 上传单个文档入库（pdf/txt/md/docx/html/htm/csv） |
 | POST | `/ingest/directory` | 把 `data/` 下所有文档批量入库 |
 | POST | `/retrieve` | **只检索不生成**，调参神器 |
 | POST | `/query` | 完整 Agentic RAG 问答 |
 | DELETE | `/index` | 清空向量库 |
+
+### Prometheus API 指标
+
+服务默认在 <http://127.0.0.1:8000/metrics> 暴露指标。可通过 `.env` 配置：
+
+```dotenv
+METRICS_ENABLED=true
+METRICS_PATH=/metrics
+```
+
+核心指标如下：
+
+| 指标 | 标签 | 用途 |
+|---|---|---|
+| `http_requests_total` | `handler`、`method`、`status` | 请求总数；状态码按 `2xx/4xx/5xx` 聚合 |
+| `http_request_duration_seconds` | `handler`、`method` | 请求延迟直方图，桶覆盖 50ms～300s |
+| `http_requests_inprogress` | `handler`、`method` | 当前正在处理的请求数 |
+
+`/metrics` 本身不会计入上述业务指标。常用 PromQL：
+
+```promql
+# 总 QPS
+sum(rate(http_requests_total[5m]))
+
+# 按接口统计 QPS
+sum by (handler, method) (rate(http_requests_total[5m]))
+
+# 每个接口的 P95 延迟
+histogram_quantile(
+  0.95,
+  sum by (le, handler, method) (rate(http_request_duration_seconds_bucket[5m]))
+)
+
+# 5xx 错误率（0～1）
+sum(rate(http_requests_total{status="5xx"}[5m]))
+/
+sum(rate(http_requests_total[5m]))
+```
+
+Prometheus 抓取配置示例；Prometheus 在同一个 Compose 网络中时使用 `app:8000`，
+从宿主机运行时改成 `host.docker.internal:8000`：
+
+```yaml
+scrape_configs:
+  - job_name: rag-api
+    scrape_interval: 15s
+    static_configs:
+      - targets: ["app:8000"]
+```
+
+生产环境建议只允许 Prometheus 从内网访问 `/metrics`，不要直接暴露到公网。
 
 ### 典型流程
 
