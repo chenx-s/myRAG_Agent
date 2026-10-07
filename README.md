@@ -37,7 +37,7 @@ RAG_mine/
 ├── data/                     # 知识库源文档
 ├── vector_db/                # Milvus 本地库 + BM25 语料副本（自动生成）
 └── docs/
-    └── 升级说明.md            # 本次升级的完整说明与踩坑记录
+    └──.md            
 ```
 
 ---
@@ -426,17 +426,3 @@ Cohere 给出的分数的确会是很低的 0.0x 量级，此时 `/query` 返回
 
 6. **上生产时**把 `RAG_MILVUS_URI` 改成 `http://localhost:19530`（Docker 起的 Milvus）
    或 Zilliz Cloud 地址，代码一行都不用动。
-
----
-
-## 参考来源
-
-- [langchain-ai/rag-from-scratch](https://github.com/langchain-ai/rag-from-scratch) —— 检索评分、查询改写、自我 RAG
-- [Lilian Weng, LLM Powered Autonomous Agents](https://lilianweng.github.io/posts/2023-06-23-agent/) —— 规划 / 反思 / 记忆
-- [datawhalechina/llm-universe](https://datawhalechina.github.io/llm-universe/) —— 知识库搭建与检索问答链
-- [datawhalechina/llm-cookbook](https://github.com/datawhalechina/llm-cookbook) —— Chat With Your Data / Advanced Retrieval
-- [LlamaIndex Query Transformations](https://developers.llamaindex.ai/python/framework/optimizing/advanced_retrieval/query_transformations/) —— Multi-Query、RAG-Fusion、HyDE
-- [LlamaIndex CohereRerank](https://developers.llamaindex.ai/python/examples/node_postprocessor/coherererank/) —— Node Postprocessor 精排
-- [RAGAs 文档](https://docs.ragas.io/en/latest/) —— RAG 评估指标
-
-更详细的升级过程与踩坑记录见 `docs/升级说明.md`。

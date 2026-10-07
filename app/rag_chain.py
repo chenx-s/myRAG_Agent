@@ -1,11 +1,4 @@
-"""Agentic RAG 问答链（LangGraph 实现）—— 升级版。
-
-相比上一版新增三个环节，检索质量是这次升级的主战场：
-
-    [新增] transform_query  查询变换：RAG-Fusion 多查询裂变 / HyDE 假设文档
-    [升级] retrieve         单路向量检索 -> 混合检索（稠密 ⊕ BM25，RRF 融合）
-    [新增] rerank           交叉编码器精排（Cohere Rerank / BGE CrossEncoder）
-
+"""Agentic RAG 问答链（LangGraph 实现）
 完整流程图：
 
     transform_query -> retrieve -> rerank_documents -> grade_document
@@ -28,11 +21,6 @@
     评分调用次数直接降 4 倍，整条链路的延迟和 token 成本都跟着降。
     这也正是 LlamaIndex "先宽召回、再精排、后处理" 的标准分层。
 
-参考来源：
-- LlamaIndex Advanced Retrieval / Query Transformations：Multi-Query、RAG-Fusion、HyDE、Step-back
-- LlamaIndex CohereRerank node postprocessor：Node Postprocessor 精排
-- rag-from-scratch 12-18 课：文档相关性评分、查询改写、答案忠实性自检
-- Lilian Weng《LLM Powered Autonomous Agents》：规划（子任务分解）与反思（双评分器）
 """
 
 from __future__ import annotations
@@ -57,12 +45,7 @@ from app.vector_store import amulti_query_search, warmup
 
 
 def get_llm(**kwargs) -> ChatOpenAI:
-    """通过 OpenAI 兼容协议接入智谱 GLM。
 
-    GLM-4.5 系列是混合推理模型：深度思考默认开启，既慢又可能耗尽
-    max_tokens 导致正文为空。评分/改写/生成都是轻量任务，
-    显式关闭 thinking 换取低延迟和稳定输出。
-    """
     return ChatOpenAI(
         model=settings.LLM_MODEL_NAME,
         api_key=settings.OPENAI_API_KEY,
@@ -307,7 +290,6 @@ def get_reranker():
         每个词都能和对方的词做交互注意力，准确率高得多，代价是只能逐条打分。
         所以标准打法是：向量检索负责"从百万里捞出一百"，精排负责"从一百里挑出五"。
 
-    返回 None 表示精排不可用（未配置 Key 或依赖缺失），调用方会跳过精排。
     """
     if not settings.RERANK_ENABLED:
         return None
@@ -361,9 +343,6 @@ def normalize_question(question: str) -> str:
     3. 忽略英文字符的大小写。
     4. 忽略句末的常见中英文标点。
 
-    例如下面两个问题会被认为相同：
-        LangGraph 是什么？
-        langgraph是什么
     """
     normalized = unicodedata.normalize("NFKC", question)
     normalized = re.sub(r"\s+", "", normalized)
@@ -445,9 +424,7 @@ def _format_context(documents: List[Document]) -> str:
 
 
 async def transform_query(state: GraphState) -> dict:
-    """节点 0【新增】：查询变换。
-
-    对应 LlamaIndex Query Transformations 里的三件套，按配置三选一：
+    """节点 0：查询变换。
 
     - none        直接用原问题（等价于升级前的行为）
     - multi_query RAG-Fusion：把一个问题裂变成 N 个不同角度的查询。
@@ -458,8 +435,6 @@ async def transform_query(state: GraphState) -> dict:
                   比"问题和答案"更近——用问题去检索是跨分布匹配，
                   用假设答案去检索是同分布匹配。
 
-    这个方法自身也可能失败（LLM 超时/返回垃圾），失败时一律退回原问题，
-    绝不让查询变换成为整条链路的单点故障。
     """
     question = state["question"]
     mode = settings.QUERY_TRANSFORM
@@ -507,11 +482,7 @@ async def transform_query(state: GraphState) -> dict:
 
 
 async def retrieve(state: GraphState) -> dict:
-    """节点 1【升级】：混合检索（稠密向量 ⊕ BM25 稀疏，RRF 融合）。
-
-    与升级前的区别：以前是 search(question) 单路向量检索；
-    现在是 multi_query_search(queries) —— 每条变换后的查询各做一次混合检索，
-    再把所有结果按 RRF 融合成一份候选集。
+    """节点 1：混合检索（稠密向量 ⊕ BM25 稀疏，RRF 融合）。
 
     这里刻意"召回宁宽勿窄"（默认 20 条），因为后面紧跟精排。
     粗排负责别漏，精排负责排准，两者分工明确。
@@ -530,7 +501,7 @@ async def retrieve(state: GraphState) -> dict:
 
 
 async def rerank_documents(state: GraphState) -> dict:
-    """节点 2【新增】：交叉编码器精排。
+    """节点 2：交叉编码器精排。
 
     Cohere Rerank（也是 LlamaIndex 官方推荐的 Node Postprocessor）：
     输入 [问题, 20 条候选]，输出按真实相关度重排后的 top_n 条。

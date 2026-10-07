@@ -33,12 +33,6 @@ from pydantic import BaseModel, Field
 
 from redis_fastapi import FastAPIRedis , AsyncRedisDep
 
-# ---------------------------------------------------------------- 日志降噪
-# pypdf 解析复杂 PDF（比如 llama2.pdf）时会刷大量这种 WARNING：
-#   Exceeded 5000 form XObject invocations while extracting text,
-#   please set the parameter 'max_invocations' to a higher value...
-# 它只说明当前页的部分文字可能没提取完整，不影响入库流程能否成功，
-# 但一次 ingest 能刷几十行把有用日志淹掉，所以压到 ERROR。
 logging.getLogger("pypdf").setLevel(logging.ERROR)
 logging.getLogger("pypdf._page").setLevel(logging.ERROR)
 
@@ -53,17 +47,6 @@ from app.rag_chain import RAGChain
 from app.observability import setup_metrics
 from app.vector_store import add_documents, clear, count, stats, warmup
 
-
-
-# ---------------------------------------------------------------- Schemas
-
-
-# 下面这些继承 BaseModel 的类都是「API 契约」—— 定义请求和响应长什么样。
-# FastAPI 会拿它们的字段定义自动做三件事：
-#   1) 校验请求体（类型不对 / 缺字段 → 自动返回 422，不用你手写 if 判断）；
-#   2) 生成交互式文档（启动后访问 /docs 就能看到，还能直接试）；
-#   3) 序列化响应（只返回这里声明过的字段，多余的自动丢掉）。
-# 所以想看某个接口收什么、返回什么，直接看对应的类即可，不用去读路由函数。
 
 
 class QueryRequest(BaseModel):
@@ -111,12 +94,6 @@ class QueryResponse(BaseModel):
     candidates: int = Field(0, description="混合检索融合后的候选数（精排前）")
     reranked: bool = Field(False, description="本轮是否执行了精排")
 
-    # 忠实性自检（防幻觉）结果，取值：
-    #   yes      答案通过校验
-    #   no       未通过（已按 GROUNDEDNESS_ACTION 处理：重生成 / 保留 / 拒答）
-    #   skipped  兜底答案，无需检查
-    #   off      检查被配置关闭
-    #   unknown  检查调用本身失败，保留了原答案
     groundedness: str = Field("unknown", description="忠实性自检结果")
     groundedness_retries: int = Field(0, description="触发严格模式重生成的次数")
 
