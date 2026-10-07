@@ -78,10 +78,6 @@ def load_document(file_path: str) -> List[Document]:
     elif suffix == ".csv":
         # CSVLoader 默认**每行生成一个 Document**，并把列名+列值拼成
         # "列名: 值\n列名: 值" 的文本 —— 这样每行都能被独立检索到。
-        # 【踩坑提示】CSV 的 metadata 里会带 source 等字段，且行与行之间
-        # metadata 结构可能不完全一致；升级后用 enable_dynamic_field=True
-        # 把全部 metadata 塞进动态字段，正是为了兼容这种异构情况
-        # （详见 vector_store.get_vector_store 和本文档末尾的 DataNotMatchException 说明）。
         from langchain_community.document_loaders import CSVLoader
         loader = CSVLoader(str(path))
 
@@ -118,14 +114,10 @@ def load_directory (dir_path: str = None) -> List[Document]:
         3) 单个文件解析失败**只跳过、不中断**：一个坏 PDF 不应该让整次索引全盘失败。
            失败信息会打印到终端（带文件名），方便你事后单独处理。
     """
-    # `dir_path or settings.DATA_DIR` —— 注意这里不能用 `or` 之外的方式，
-    # 因为 Path("") 在 Python 里会被当成当前目录，而空字符串是 falsy 的，
-    # 所以传 "" 也会正确回退到配置里的 DATA_DIR。
+
     dir_path = Path(dir_path or settings.DATA_DIR)
 
-    # 目录不存在时返回空列表。不抛异常的原因：
-    # 服务启动时会调用这个函数做预热，此时 ./data 目录可能还没建，
-    # 抛异常会导致服务起不来 —— 空目录是完全合法的初始状态。
+
     if not dir_path.exists():
         return []
 
@@ -150,14 +142,6 @@ def load_directory (dir_path: str = None) -> List[Document]:
 def clean_text(text: str) -> str:
     """轻度文本清洗：去掉每行首尾空白 + 删掉空行。
 
-    为什么不做得更"干净"（比如去掉页眉页脚、合并断行）？
-        因为清洗越激进，误删正文内容的风险越大。
-        这里只做**零风险**的两件事，保证不会吃掉任何有效字符。
-
-    对检索的实际好处：
-        切块时，一个块里如果有大量连续空行，会挤占 chunk_size 的字符额度，
-        导致有效信息变少、向量表示变"稀"。去掉空行能让同样的
-        chunk_size 装下更多有用内容。
     """
     # splitlines() 会正确处理 \r\n / \n / \r 三种换行符（Windows 文件很常见）
     lines = [line.strip() for line in text.splitlines()]
@@ -181,11 +165,6 @@ def split_documents(docs: List[Document]) -> List[Document]:
         这样能最大程度保证"在语义边界断开"，而不是拦腰截断一句话
         （llm-universe C3 的切片最佳实践，也是 rag-from-scratch 反复强调的点）。
 
-    两个关键配置（都在 .env 里，改完重启即可生效）：
-        CHUNK_SIZE    ：每块最大字符数，默认 500；
-        CHUNK_OVERLAP ：相邻块的重叠字符数，默认 50。
-                        重叠是为了防止"答案刚好被切在两块的交界处"，
-                        导致两块都只包含半句话、谁都匹配不上。
     """
     if not docs:
         return []

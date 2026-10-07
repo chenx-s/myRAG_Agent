@@ -1,8 +1,4 @@
-"""Redis-backed cache for LangChain LLM/chat-model generations.
 
-The async methods are the primary path used by this project.  Redis failures are
-treated as cache misses so a cache outage never becomes an LLM outage.
-"""
 
 from __future__ import annotations
 

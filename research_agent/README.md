@@ -1,6 +1,5 @@
 # 研究助手 Agent
 
-集成 **RAG（本地知识库）** 与 **Web 搜索** 的 Agent，对应学习计划 **Day 21 周度项目构建**。
 
 ---
 
@@ -457,30 +456,6 @@ ALL_TOOLS = [search_local_knowledge, search_web, calculator]
 > 所有工具的 docstring 都要足够清晰才能互相区分。经验法则：
 > 超过 10 个工具时，考虑用"分类 + 二级 Agent"的方式分层组织。
 
----
-
-## 与学习计划的对应关系
-
-| 学习计划 | 对应本项目的位置 |
-|---|---|
-| Day 15 Agent 核心概念 / ReAct | `agent.py` 的 `create_agent` 组装 + CLI 里可视化的思考轨迹 |
-| Day 16 自定义工具开发 | `tools.py`，重点是 docstring 的三段式写法 |
-| Day 17 SQL & 数据库工具 | 思路完全相同（把数据库查询包装成工具），本项目用本地检索代替 |
-| Day 18 Function Calling 实战 | 「逐段讲解 · 三」，以及 `_parse_trace()` 对消息流的解析 |
-| Day 19 Agent Memory | `checkpointer=InMemorySaver()` + `thread_id` 隔离 |
-| Day 20 Agent 错误处理 | `resilience.py` 全部内容 |
-| **Day 21 周度项目构建** | **本项目整体** |
-
-**手撕清单（图片里的三项）对照：**
-
-- ✅ 「实现 3 个自定义工具」→ 本项目给了 2 个完整实现 + 1 个扩展模板（见上一节）
-- ✅ 「基于 LangChain 构建可以链式调用工具的 Agent」→ 就是本项目
-- ⬜ 「使用 OpenAI Function Calling 实现结构化数据提取」→ **这个还没做**，
-  它是另一个方向的应用（不是 Agent 而是**结构化输出**）。
-  可以用 `with_structured_output()` 或 `create_agent(..., response_format=...)` 实现，
-  建议作为下一步练习。
-
----
 
 ## 常见问题
 

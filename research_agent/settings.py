@@ -10,11 +10,6 @@
     这样你在 .env 里改一次模型，两边同时生效，不会出现
     "RAG 用 glm-4.5-air、Agent 用 glm-4 却没人发现"的错配。
 
-【新增的环境变量】
-    在项目根目录的 .env 里加一行：
-        TAVILY_API_KEY=tvly-xxxxxxxxxxxx
-    免费申请：https://tavily.com  （注册后在 Dashboard 能看到 key，
-    免费额度每月 1000 次搜索，学习完全够用）
 """
 
 import os

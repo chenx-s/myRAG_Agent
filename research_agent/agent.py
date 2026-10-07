@@ -1,7 +1,4 @@
-"""研究助手 Agent —— 组装与交互。
-
-对应学习计划 Day 15（Agent 核心概念 / ReAct）、Day 18（Function Calling）、
-Day 19（Memory）、Day 21（周度项目构建）。
+"""研究助手 Agent 
 
 ================================ 这个 Agent 有什么 ================================
 
@@ -37,8 +34,8 @@ Day 19（Memory）、Day 21（周度项目构建）。
       · 每个工具都套了 resilient 装饰器，失败会重试、最终降级为"失败说明"，
         而非抛异常让对话中断
 
-【重要】ReAct 循环不是你写的，是 create_agent 内置的。
-    你要做的是三件事：
+【重要】ReAct 是 create_agent 内置的。
+    三件事：
       ① 把工具设计好（tools.py）—— 尤其把 docstring 写清楚
       ② 把 system_prompt 写好（本文件）—— 告诉 Agent 该怎么工作
       ③ 把外部依赖兜住（resilience.py）—— 让工具失败不至于炸掉整个流程
@@ -78,25 +75,6 @@ logging.basicConfig(
 logger = logging.getLogger("research_agent")
 
 
-# ===========================================================================
-# 一、System Prompt —— Agent 的"工作手册"
-# ===========================================================================
-#
-# 【为什么这段文字如此重要】
-#     system_prompt 不参与检索、不参与工具调用，但它决定了
-#     Agent **如何组合使用这些工具**。同样的两个工具，
-#     换一段 system_prompt，Agent 的行为可能完全不同：
-#        · 写成"尽量用本地知识库" → 每个问题先翻本地，慢了才联网
-#        · 写成"优先保证信息最新"   → 动不动就联网，本地库形同虚设
-#
-#     所以 prompt 里必须明确三件事：
-#       ① 角色和职责边界（你是研究助手，不是聊天机器人）
-#       ② **工具选择策略**（什么情况用哪个 —— 这是最关键的）
-#       ③ 输出规范（要不要标来源、找不到怎么办）
-#
-#     特别注意第三条里的「找不到就说找不到」——
-#     如果不明确禁止，Agent 在工具返回空结果时很容易开始编造，
-#     这是 Agent 系统里最常见的翻车方式。
 
 RESEARCH_SYSTEM_PROMPT = """你是一个专业的研究助手，任务是帮用户做资料调研并给出有据可查的回答。
 
@@ -171,15 +149,6 @@ def build_agent(checkpointer: Optional[InMemorySaver] = None):
         model=build_llm(),
         tools=ALL_TOOLS,
         system_prompt=RESEARCH_SYSTEM_PROMPT,
-        # ---------------------------------------------------------------
-        # Memory（对应 Day 19）
-        # InMemorySaver 把每轮对话的消息存在**进程内存**里，
-        # 靠 config 里的 thread_id 区分不同会话：
-        #     同一个 thread_id  → 连续对话，Agent 记得上文
-        #     换一个 thread_id  → 全新的会话，不记得之前的
-        # 注意它是内存存储，**进程退出就没了**。
-        # 要持久化可以换 SqliteSaver / PostgresSaver（接口一样）。
-        # ---------------------------------------------------------------
         checkpointer=checkpointer or InMemorySaver(),
     )
 

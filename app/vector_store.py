@@ -15,19 +15,7 @@
    这正是 Milvus 原生 hybrid search 的默认融合策略，也是 LlamaIndex
    QueryFusionRetriever 的默认融合策略。
 
-为什么自己实现 RRF，不用 LangChain 的 EnsembleRetriever？
-    langchain 1.x 已经把 langchain.retrievers 模块移除了（实测 ImportError），
-    EnsembleRetriever 挪到了 langchain_classic，且只支持"两路"。
-    自己写 20 行，既不依赖版本，又能顺带复用去实现跨查询融合（RAG-Fusion）。
 
-关于 BM25 语料持久化
-    Milvus 只存向量和文本，BM25 需要重新构建倒排索引。为了让服务重启后
-    BM25 依然可用，写入时把文本块同步落一份 JSONL 副本，启动时读回重建。
-
-参考：
-- LlamaIndex Advanced Retrieval / Query Transformations：QueryFusionRetriever 融合多路召回
-- Milvus 官方 hybrid search（RRF / weighted ranker）
-- llm-cookbook《Advanced Retrieval for AI》：混合检索 + 精排的组合拳
 """
 
 from __future__ import annotations
@@ -78,8 +66,6 @@ def _detect_device() -> str:
 def get_embeddings():
     """本地 HuggingFace Embedding（单例，避免重复加载模型权重）。
 
-    - BAAI/bge-small-en-v1.5: 384 维，轻量，CPU 即可跑
-    - normalize_embeddings=True: 归一化后内积等价于余弦相似度，检索更稳
     """
     from langchain_huggingface import HuggingFaceEmbeddings
 
@@ -138,15 +124,6 @@ def _exception_chain(error: BaseException) -> str:
 def _local_db_locked(db_path: str) -> bool:
     """探测本地 Milvus 库的独占锁是否已被别的进程持有。
 
-    为什么要自己探：milvus_lite 的 `start_and_get_uri()` 把
-    `DataDirLockedError` **吞掉并只打到 stderr**，然后返回 None，
-    pymilvus 再统一抛出没营养的 `Open local milvus failed`。
-    异常链里根本拿不到真实原因，只能按它的加锁方式自己试一次。
-
-    milvus_lite 对 <库目录>/LOCK 加独占锁：Windows 用 msvcrt.locking，
-    Unix 用 fcntl.flock，都是非阻塞模式。
-    - 加得上   -> 没人占用（立刻解锁，无副作用）
-    - 加不上   -> 确实有别的进程在用这个库
     """
     if not os.path.isdir(db_path):
         return False  # 目录都还没建，不是锁的问题
@@ -180,15 +157,6 @@ def _local_db_locked(db_path: str) -> bool:
 def _explain_milvus_open_failure(error: BaseException) -> None:
     """把 pymilvus 那句含糊的报错翻译成能直接照做的提示，然后抛出 RuntimeError。
 
-    pymilvus 打不开本地库时，无论什么原因，统一抛：
-        ConnectionConfigException: Open local milvus failed
-    真实原因（目录不存在 / 被别的进程锁住 / 没装 milvus-lite）全被吞在下层，
-    排查起来非常费劲。这里逐一还原。
-
-    为什么会踩到这个坑：
-    上线时服务已经在 8000 端口跑着（占着库的独占锁），
-    再开一个终端执行 `python main.py`，就会看到这句毫无信息量的
-    "Open local milvus failed"，完全猜不到是"库被占用了"。
     """
     text = _exception_chain(error)
 
@@ -262,20 +230,6 @@ def get_vector_store():
     ----------------------------------------------------------
     langchain-milvus 默认 `enable_dynamic_field=False`，此时它会拿**第一次入库
     时扫到的全部 metadata key** 去建固定字段（见 `_add_metadata_fields`）。
-
-    问题在于我们的 metadata 是**异构**的：
-        - PyPDFLoader 会给每页附加 producer / creator / creationdate / total_pages …
-        - TextLoader 只有 source / filename / start_index
-        - CSVLoader 会把 CSV 的列名带上
-        - 我们自己在 document_processer 里加的 filename
-
-    而 `/ingest/directory` 是把**所有文件合并成一个列表**一次性 add_documents 的
-    （见 main.py 的 _ingest_docs）。于是：
-        1. 建表时扫到 llama2.pdf 的 `producer`，把它建成固定字段；
-        2. 接着插入 Data.csv 的块 —— 它没有 `producer` —— 直接报错：
-           DataNotMatchException: Insert missed an field `producer` to collection
-           without set nullable==true or set default_value
-        3. 整批插入失败，用户看到 500。
 
     开启动态字段后，所有 metadata 统一进 Milvus 的 `$meta` JSON 字段，
     任意形状的 metadata 都能写入，检索时也会自动回填。
