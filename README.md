@@ -1,4 +1,4 @@
-# RAG_mine
+# RAG_Agent
 
 端到端文档问答 API。**FastAPI + LangChain + LangGraph** 搭骨架，
 检索层用 **Milvus 稠密检索 ⊕ BM25 稀疏检索的混合检索（RRF 融合）**＋**Cohere Rerank 精排**，
